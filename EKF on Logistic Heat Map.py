@@ -1,0 +1,102 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+
+plt.rcParams.update({'axes.labelsize': 18, 'xtick.labelsize': 16, 'ytick.labelsize': 16})
+seed = 310304 # Best chosen seed
+rng = np.random.default_rng(seed)
+
+def logistic_map(x, r): # Function for Logistic
+    return r * x * (1 - x)
+
+sigma_Q = 0.5  # Controls Variability of Q_k
+def ekf_logistic_r_estimation(r_true, r_guess, rng, n_steps=100, Q=1e-5, x0_true=0.7, x0_hat=0.7):
+    t0 = time.perf_counter()
+    Q_seq = Q * np.exp(sigma_Q * rng.normal(size = n_steps)) 
+    x_true = np.zeros(n_steps)
+    y_meas = np.zeros(n_steps)
+    x_true[0] = x0_true
+    y_meas[0] = x_true[0] + rng.normal(0, np.sqrt(Q_seq[0]))
+    for k in range(1, n_steps):
+        x_true[k] = logistic_map(x_true[k-1], r_true)
+        y_meas[k] = x_true[k] + rng.normal(0, np.sqrt(Q_seq[k]))
+
+    x_hat = np.zeros(n_steps)
+    r_hat = np.zeros(n_steps)
+    x_hat[0], r_hat[0] = x0_hat, r_guess
+    P = np.eye(2)
+    C = np.array([[1, 0]])
+
+    for k in range(1, n_steps):
+        x_prev, r_prev = x_hat[k-1], r_hat[k-1]
+        x_pred = logistic_map(x_prev, r_prev)
+        r_pred = r_prev
+        s_pred = np.array([[x_pred], [r_pred]])
+
+        dphidx = r_prev * (1 - 2*x_prev)
+        dphidr = x_prev * (1 - x_prev)
+        Phi = np.array([[dphidx, dphidr], [0, 1]])
+        P_pred = Phi @ P @ Phi.T
+
+        y_pred = (C @ s_pred)[0, 0]
+        innovation = y_meas[k] - y_pred
+        S = (C @ P_pred @ C.T)[0, 0] + Q_seq[k]
+        K = (P_pred @ C.T) / S
+        s_upd = s_pred + K * innovation
+        P = (np.eye(2) - K @ C) @ P_pred
+
+        s_upd = np.asarray(s_upd).reshape(-1)
+        x_hat[k], r_hat[k] = s_upd[0], s_upd[1]
+        
+    t1 = time.perf_counter()
+    runtime = t1 - t0
+    return r_hat[-1], runtime
+
+r_true_list = [2, 2.4, 2.8, 3.2, 3.6, 4] # Run Experiment
+Q_list = np.logspace(-7, -2, 11, base = 10)
+r_guess = 1
+n_steps = 100
+heat = np.zeros((len(r_true_list), len(Q_list)))
+times = np.zeros_like(heat)
+
+for i, r_true in enumerate(r_true_list): # Create Grid
+    for j, Q in enumerate(Q_list):
+        r_final, runtime = ekf_logistic_r_estimation(r_true, r_guess, rng, n_steps, Q)
+        times[i, j] = runtime
+        heat[i, j] = abs(r_true - r_final)
+
+heat_normalized = (heat / np.max(heat)) # Normalize Metrics
+times_normalized = times / np.max(times)
+times_normalized = (times_normalized - np.min(times_normalized))
+times_normalized /= np.max(times_normalized)
+times_normalized = 0.2 + 0.8 * times_normalized
+
+fig, ax = plt.subplots(figsize=(16, 8))
+im = ax.imshow(heat_normalized, cmap='OrRd', origin='lower')
+exponents = np.linspace(-7, -2, len(Q_list))
+
+ax.set_xticks(np.arange(len(Q_list)))
+ax.set_xticklabels([f'{e:g}' for e in exponents])
+ax.set_yticks(np.arange(len(r_true_list)))
+ax.set_yticklabels([f'{r:.2f}' for r in r_true_list])
+ax.tick_params(axis='both', which='major', labelsize=26)
+ax.set_xlabel('log10(Q) - Measurement Noise', fontsize=26)
+ax.set_ylabel('True r', fontsize=26)
+ax.set_title('EKF Accuracy r vs Q', fontsize=26)
+fig.colorbar(im, ax=ax)
+
+plt.tight_layout()
+plt.show()
+fig2, ax2 = plt.subplots(figsize=(10, 6))
+for i, r_true in enumerate(r_true_list):
+    ax2.plot(Q_list, times[i], marker='o', label=f"r={r_true}")
+
+ax2.set_xscale('log')
+ax2.tick_params(axis='both', which='major', labelsize=16)
+ax2.set_xlabel("Q - Measurement Noise", fontsize=18)
+ax2.set_ylabel("Runtime (s)", fontsize=18)
+ax2.set_title("EKF Runtime vs Q", fontsize=18)
+ax2.legend(fontsize=18)
+
+plt.tight_layout()
+plt.show()
